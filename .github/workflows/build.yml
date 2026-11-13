@@ -1,0 +1,75 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.44.8'
+          cache: true
+
+      - name: Generate Android project
+        run: |
+          cp lib/main.dart /tmp/main.dart
+          cp pubspec.yaml /tmp/pubspec.yaml
+          flutter create --platforms=android --project-name study_flow --org com.studyflow .
+          cp /tmp/main.dart lib/main.dart
+          cp /tmp/pubspec.yaml pubspec.yaml
+          sed -i 's/android:label="[^"]*"/android:label="StudyFlow"/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/version "2.4.0" apply false/version "2.3.20" apply false/' android/settings.gradle.kts
+
+      - name: Configure Android for notifications
+        run: |
+          python3 - <<'PYEOF'
+          m = 'android/app/src/main/AndroidManifest.xml'
+          s = open(m, encoding='utf-8').read()
+          names = ['POST_NOTIFICATIONS', 'RECEIVE_BOOT_COMPLETED', 'VIBRATE', 'SCHEDULE_EXACT_ALARM', 'USE_EXACT_ALARM']
+          perms = ''.join('    <uses-permission android:name="android.permission.%s"/>\n' % n for n in names)
+          if 'POST_NOTIFICATIONS' not in s:
+              s = s.replace('<application', perms + '    <application', 1)
+          recv = (
+              '        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />\n'
+              '        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n'
+              '            <intent-filter>\n'
+              '                <action android:name="android.intent.action.BOOT_COMPLETED"/>\n'
+              '                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n'
+              '                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n'
+              '                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>\n'
+              '            </intent-filter>\n'
+              '        </receiver>\n'
+          )
+          if 'ScheduledNotificationReceiver' not in s:
+              s = s.replace('</application>', recv + '    </application>', 1)
+          open(m, 'w', encoding='utf-8').write(s)
+
+          g = 'android/app/build.gradle.kts'
+          t = open(g, encoding='utf-8').read()
+          if 'isCoreLibraryDesugaringEnabled' not in t:
+              assert 'compileOptions {' in t, 'compileOptions block not found'
+              t = t.replace('compileOptions {', 'compileOptions {\n        isCoreLibraryDesugaringEnabled = true', 1)
+              t += '\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n'
+          open(g, 'w', encoding='utf-8').write(t)
+          print(open(m, encoding='utf-8').read())
+          PYEOF
+
+      - run: flutter pub get
+      - run: flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StudyFlow-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
